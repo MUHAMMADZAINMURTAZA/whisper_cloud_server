@@ -1,22 +1,28 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from faster_whisper import WhisperModel
-import tempfile
+from starlette.concurrency import run_in_threadpool
+import tempfile, os
 
 app = FastAPI()
+model = WhisperModel("tiny", device="cpu", compute_type="int8")
 
-model = WhisperModel("base", device="cpu")
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 @app.post("/transcribe")
 async def transcribe(file: UploadFile = File(...)):
-    
-    with tempfile.NamedTemporaryFile(delete=False) as temp_audio:
-        temp_audio.write(await file.read())
-        temp_path = temp_audio.name
-
-    segments, info = model.transcribe(temp_path)
-
-    text = ""
-    for segment in segments:
-        text += segment.text
-
-    return {"text": text}
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(await file.read())
+        path = tmp.name
+    try:
+        def do_transcribe():
+            segments, _ = model.transcribe(path, vad_filter=True, beam_size=1)
+            return "".join(s.text for s in segments).strip()
+        text = await run_in_threadpool(do_transcribe)
+        return {"text": text}
+    finally:
+        try:
+            os.remove(path)
+        except:
+            pass
